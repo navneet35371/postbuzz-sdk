@@ -1,0 +1,46 @@
+{
+  "name": "postbuzz",
+  "version": "0.1.0",
+  "description": "Official TypeScript SDK for the post.buzz REST API — posts, accounts, media, comments, inbox, analytics, teams, and CSV imports across 16+ social platforms.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/navneet35371/postbuzz-sdk.git"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "post.buzz",
+    "postbuzz",
+    "social-media",
+    "sdk",
+    "api-client",
+    "scheduling",
+    "cross-posting"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
