@@ -1,6 +1,6 @@
 {
   "name": "postbuzz",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Official TypeScript SDK for the post.buzz REST API — posts, accounts, media, comments, inbox, analytics, teams, and CSV imports across 16+ social platforms.",
   "type": "module",
   "license": "MIT",

@@ -151,7 +151,10 @@ export function createRequester(opts: {
       const res = await raw(method, path, reqOpts);
       if (res.status === 204) return undefined as T;
       const envelope = (await res.json()) as ApiResponse<T>;
-      return envelope.data;
+      // Most routes wrap payloads in { data: ... }; some (POST /v1/posts,
+      // DELETE /v1/posts/:id) return the payload bare. Pass bare bodies
+      // through instead of silently degrading to undefined.
+      return envelope?.data !== undefined ? envelope.data : (envelope as T);
     },
     async requestEnvelope<E>(
       method: string,

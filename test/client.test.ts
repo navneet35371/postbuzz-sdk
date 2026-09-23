@@ -452,6 +452,15 @@ describe("payload handling", () => {
     });
   });
 
+  it("decodes bare (unwrapped) success bodies — POST /v1/posts shape", async () => {
+    const bare = { id: "p2", status: "draft" };
+    responses.push({ status: 201, body: JSON.stringify(bare) });
+    const out = await client().posts.create({
+      accountIds: ["a1"],
+      caption: "hi",
+    });
+    expect(out).toEqual(bare);
+  });
   it("returns list envelopes with pagination siblings", async () => {
     responses.push({
       status: 200,
