@@ -1,23 +1,35 @@
 {
   "name": "postbuzz",
-  "version": "0.1.1",
-  "description": "Official TypeScript SDK for the post.buzz REST API — posts, accounts, media, comments, inbox, analytics, teams, and CSV imports across 16+ social platforms.",
+  "version": "0.2.0",
+  "description": "Official TypeScript SDK for the post.buzz REST API — posts, accounts, media, comments, inbox, analytics, teams, CSV imports, and video clipping across 16+ social platforms.",
   "type": "module",
   "license": "MIT",
+  "author": "NAVIKEDAR TECH PRIVATE LIMITED <contact@post.buzz>",
+  "homepage": "https://docs.post.buzz",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/navneet35371/postbuzz-sdk.git"
   },
+  "bugs": {
+    "url": "https://github.com/navneet35371/postbuzz-sdk/issues"
+  },
   "engines": {
     "node": ">=20"
   },
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
-    }
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"
@@ -26,7 +38,8 @@
     "build": "tsup",
     "test": "vitest run",
     "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
   },
   "keywords": [
     "post.buzz",
@@ -42,5 +55,7 @@
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
-  }
+  },
+  "module": "./dist/index.js",
+  "sideEffects": false
 }

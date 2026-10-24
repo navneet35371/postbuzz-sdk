@@ -495,13 +495,14 @@ describe("error mapping", () => {
     const err = await expectError(client().posts.delete("p1"));
     expect(err).toBeInstanceOf(PostBuzzError);
     expect(err.status).toBe(400);
-    expect(err.code).toBe("HTTP_400");
+    expect(err.code).toBe("bad_request");
     expect(err.message).toBe("Cannot delete published post");
   });
 
   it("maps a non-JSON error body to HTTP_<status>", async () => {
     responses.push({ status: 502, body: "Bad gateway" });
-    const err = await expectError(client().posts.list());
+    const pb = new PostBuzz({ apiKey: "sx_live_test", baseUrl: base, maxRetries: 0 });
+    const err = await expectError(pb.posts.list());
     expect(err.status).toBe(502);
     expect(err.code).toBe("HTTP_502");
     expect(err.message).toContain("Bad gateway");
@@ -511,9 +512,110 @@ describe("error mapping", () => {
     const pb = new PostBuzz({
       apiKey: "sx_live_test",
       baseUrl: "http://127.0.0.1:1/api",
+      maxRetries: 0,
     });
     const err = await expectError(pb.posts.list());
     expect(err).toBeInstanceOf(PostBuzzError);
     expect(err.code).toBe("UNREACHABLE");
+  });
+});
+
+describe("path encoding", () => {
+  it("percent-encodes ids so they cannot change the route", async () => {
+    ok(null);
+    await client().posts.get("../teams?x=1");
+    expect(last().path).toBe("/v1/posts/..%2Fteams%3Fx%3D1");
+  });
+});
+
+describe("clips resource", () => {
+  it("maps create/list/get/usage", async () => {
+    const pb = client();
+    ok(null);
+    await pb.clips.create({ url: "https://youtu.be/x", idempotencyKey: "k1" });
+    expect([last().method, last().path]).toEqual(["POST", "/v1/clips"]);
+    expect(JSON.parse(last().body!)).toEqual({
+      url: "https://youtu.be/x",
+      idempotencyKey: "k1",
+    });
+    ok([]);
+    await pb.clips.list({ limit: 5 });
+    expect(last().path).toBe("/v1/clips?limit=5");
+    ok(null);
+    await pb.clips.get("c1");
+    expect(last().path).toBe("/v1/clips/c1");
+    ok({ used: 1, limit: 10 });
+    expect(await pb.clips.usage()).toEqual({ used: 1, limit: 10 });
+  });
+});
+
+describe("retries and timeouts", () => {
+  /** fetch stub replaying `replies` in order, counting calls. */
+  function scripted(replies: Array<Response | Error>) {
+    const calls: string[] = [];
+    const fetch = (async (_url: URL, init: RequestInit) => {
+      calls.push(init.method ?? "GET");
+      const next = replies.shift();
+      if (!next) throw new Error("no more replies");
+      if (next instanceof Error) throw next;
+      return next;
+    }) as unknown as typeof globalThis.fetch;
+    return { calls, fetch };
+  }
+  const json = (status: number, body: unknown, headers: Record<string, string> = {}) =>
+    new Response(JSON.stringify(body), { status, headers });
+
+  it("retries 429 honoring Retry-After, even for POST", async () => {
+    const s = scripted([
+      json(429, { error: { code: "rate_limited", message: "slow" } }, { "retry-after": "0" }),
+      json(201, { data: { id: "p1", status: "draft" } }),
+    ]);
+    const pb = new PostBuzz({ apiKey: "k", fetch: s.fetch });
+    expect(await pb.posts.create({ accountIds: ["a"] })).toEqual({ id: "p1", status: "draft" });
+    expect(s.calls).toEqual(["POST", "POST"]);
+  });
+
+  it("retries 503 for GET but not for POST", async () => {
+    const get = scripted([json(503, {}), json(200, { data: [] })]);
+    await new PostBuzz({ apiKey: "k", fetch: get.fetch }).accounts.list();
+    expect(get.calls).toHaveLength(2);
+
+    const post = scripted([json(503, {}), json(201, { data: {} })]);
+    const err = await expectError(
+      new PostBuzz({ apiKey: "k", fetch: post.fetch }).posts.create({ accountIds: ["a"] }),
+    );
+    expect(err.status).toBe(503);
+    expect(post.calls).toHaveLength(1);
+  });
+
+  it("gives up after maxRetries and surfaces the last error", async () => {
+    const s = scripted([
+      json(429, {}, { "retry-after": "0" }),
+      json(429, { error: { code: "rate_limited", message: "slow" } }, { "retry-after": "0" }),
+    ]);
+    const err = await expectError(
+      new PostBuzz({ apiKey: "k", fetch: s.fetch, maxRetries: 1 }).accounts.list(),
+    );
+    expect(err.code).toBe("rate_limited");
+    expect(s.calls).toHaveLength(2);
+  });
+
+  it("maps an aborted request to TIMEOUT", async () => {
+    const timeout = Object.assign(new Error("timed out"), { name: "TimeoutError" });
+    const s = scripted([timeout]);
+    const err = await expectError(
+      new PostBuzz({ apiKey: "k", fetch: s.fetch, maxRetries: 0 }).accounts.list(),
+    );
+    expect(err.code).toBe("TIMEOUT");
+  });
+
+  it("sends a User-Agent and tolerates empty 2xx bodies", async () => {
+    let ua: string | undefined;
+    const fetch = (async (_u: URL, init: RequestInit) => {
+      ua = (init.headers as Record<string, string>)["User-Agent"];
+      return new Response(null, { status: 204 });
+    }) as unknown as typeof globalThis.fetch;
+    expect(await new PostBuzz({ apiKey: "k", fetch }).posts.delete("p")).toBeUndefined();
+    expect(ua).toMatch(/^postbuzz-sdk\//);
   });
 });

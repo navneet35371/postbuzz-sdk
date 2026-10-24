@@ -15,9 +15,15 @@
  *   organization get, usage, checkSetup (diagnostics)
  *   imports      createPostCsv/listPostCsv/getPostCsv/listPostCsvRows/
  *                retryPostCsv
+ *   clips        create/list/get/usage
  */
 
-import { createRequester, DEFAULT_BASE_URL, type Requester } from "./http.js";
+import {
+  createRequester,
+  DEFAULT_BASE_URL,
+  path,
+  type Requester,
+} from "./http.js";
 import type {
   AccountAnalytics,
   AccountListItem,
@@ -26,6 +32,9 @@ import type {
   AccountToolResult,
   BackfillResponse,
   BestTimes,
+  ClipJob,
+  ClipUsage,
+  CreateClipInput,
   CreateCommentInput,
   CreateMediaFromUrlInput,
   CreatePostInput,
@@ -66,6 +75,11 @@ export interface PostBuzzOptions {
   baseUrl?: string;
   /** Fetch implementation — injectable for tests. */
   fetch?: typeof globalThis.fetch;
+  /** Per-request timeout in ms (default 60 000). */
+  timeoutMs?: number;
+  /** Retries for 429s, and for transient 5xx / network errors on
+   *  idempotent methods (default 2). Honors `Retry-After`. */
+  maxRetries?: number;
 }
 
 export class PostBuzz {
@@ -79,6 +93,7 @@ export class PostBuzz {
   readonly platforms: PlatformsResource;
   readonly organization: OrganizationResource;
   readonly imports: ImportsResource;
+  readonly clips: ClipsResource;
   readonly baseUrl: string;
 
   constructor(opts: PostBuzzOptions) {
@@ -94,6 +109,7 @@ export class PostBuzz {
     this.platforms = new PlatformsResource(r);
     this.organization = new OrganizationResource(r);
     this.imports = new ImportsResource(r);
+    this.clips = new ClipsResource(r);
   }
 }
 
@@ -125,41 +141,41 @@ export class PostsResource {
 
   /** GET /v1/posts/:id — post + accounts (permalinks) + media. */
   get(id: string): Promise<PostDetail> {
-    return this.r.request<PostDetail>("GET", `/v1/posts/${id}`);
+    return this.r.request<PostDetail>("GET", path`/v1/posts/${id}`);
   }
 
   /** PATCH /v1/posts/:id */
   update(id: string, input: UpdatePostInput): Promise<Post> {
-    return this.r.request<Post>("PATCH", `/v1/posts/${id}`, { body: input });
+    return this.r.request<Post>("PATCH", path`/v1/posts/${id}`, { body: input });
   }
 
   /** DELETE /v1/posts/:id — published posts cannot be deleted. */
   delete(id: string): Promise<Success> {
-    return this.r.request<Success>("DELETE", `/v1/posts/${id}`);
+    return this.r.request<Success>("DELETE", path`/v1/posts/${id}`);
   }
 
   /** POST /v1/posts/:id/retry — re-queue a post's failed schedules. */
   retry(id: string): Promise<RetryPostResponse> {
-    return this.r.request<RetryPostResponse>("POST", `/v1/posts/${id}/retry`);
+    return this.r.request<RetryPostResponse>("POST", path`/v1/posts/${id}/retry`);
   }
 
   /** POST /v1/posts/:id/reschedule — move a post's target time. */
   reschedule(id: string, scheduledAt: string): Promise<Post> {
-    return this.r.request<Post>("POST", `/v1/posts/${id}/reschedule`, {
+    return this.r.request<Post>("POST", path`/v1/posts/${id}/reschedule`, {
       body: { scheduledAt },
     });
   }
 
   /** GET /v1/posts/:id/analytics */
   analytics(id: string): Promise<Insight> {
-    return this.r.request<Insight>("GET", `/v1/posts/${id}/analytics`);
+    return this.r.request<Insight>("GET", path`/v1/posts/${id}/analytics`);
   }
 
   /** POST /v1/posts/:id/analytics/refresh — enqueue an insight backfill. */
   refreshAnalytics(id: string, opts: { windowDays?: number; limit?: number } = {}): Promise<BackfillResponse> {
     return this.r.request<BackfillResponse>(
       "POST",
-      `/v1/posts/${id}/analytics/refresh`,
+      path`/v1/posts/${id}/analytics/refresh`,
       { body: opts },
     );
   }
@@ -175,7 +191,7 @@ export class AccountsResource {
 
   /** GET /v1/accounts/:id */
   get(id: string): Promise<AccountProfile> {
-    return this.r.request<AccountProfile>("GET", `/v1/accounts/${id}`);
+    return this.r.request<AccountProfile>("GET", path`/v1/accounts/${id}`);
   }
 
   /** GET /v1/accounts/connect-url — the OAuth authorize URL for a platform. */
@@ -187,20 +203,20 @@ export class AccountsResource {
 
   /** POST /v1/accounts/:id/refresh — refresh the OAuth access token. */
   refresh(id: string): Promise<AccountProfile> {
-    return this.r.request<AccountProfile>("POST", `/v1/accounts/${id}/refresh`);
+    return this.r.request<AccountProfile>("POST", path`/v1/accounts/${id}/refresh`);
   }
 
   /** DELETE /v1/accounts/:id — disconnect (cascades pending schedules,
    *  comment automation, inbox, goals, agents; keeps published history). */
   disconnect(id: string): Promise<Success> {
-    return this.r.request<Success>("DELETE", `/v1/accounts/${id}`);
+    return this.r.request<Success>("DELETE", path`/v1/accounts/${id}`);
   }
 
   /** GET /v1/accounts/:id/analytics */
   analytics(id: string, opts: { windowDays?: number } = {}): Promise<AccountAnalytics> {
     return this.r.request<AccountAnalytics>(
       "GET",
-      `/v1/accounts/${id}/analytics`,
+      path`/v1/accounts/${id}/analytics`,
       { query: opts as Record<string, unknown> },
     );
   }
@@ -209,7 +225,7 @@ export class AccountsResource {
   refreshAnalytics(id: string, opts: { windowDays?: number; limit?: number } = {}): Promise<BackfillResponse> {
     return this.r.request<BackfillResponse>(
       "POST",
-      `/v1/accounts/${id}/analytics/refresh`,
+      path`/v1/accounts/${id}/analytics/refresh`,
       { body: opts },
     );
   }
@@ -219,7 +235,7 @@ export class AccountsResource {
     tools: string[];
     inputHints: Record<string, Record<string, string>>;
   }> {
-    return this.r.request("GET", `/v1/accounts/${id}/tools`);
+    return this.r.request("GET", path`/v1/accounts/${id}/tools`);
   }
 
   /** POST /v1/accounts/:id/tools/:tool — run one (e.g. reddit-flairs with
@@ -231,7 +247,7 @@ export class AccountsResource {
   ): Promise<AccountToolResult> {
     return this.r.request<AccountToolResult>(
       "POST",
-      `/v1/accounts/${id}/tools/${tool}`,
+      path`/v1/accounts/${id}/tools/${tool}`,
       { body: input },
     );
   }
@@ -245,8 +261,8 @@ export class MediaResource {
     return this.r.request<Media>("POST", "/v1/media", { body: input });
   }
 
-  /** POST /v1/media/upload — multipart local-file upload.
-   *  `input` may be a path string (Node: read from disk) or a File/Blob. */
+  /** POST /v1/media/upload — multipart upload of a File/Blob (in Node, read
+   *  a path with `fs.openAsBlob(path)`). */
   async uploadFile(input: {
     file: Blob;
     fileName?: string;
@@ -272,12 +288,12 @@ export class MediaResource {
 
   /** GET /v1/media/:id */
   get(id: string): Promise<Media> {
-    return this.r.request<Media>("GET", `/v1/media/${id}`);
+    return this.r.request<Media>("GET", path`/v1/media/${id}`);
   }
 
   /** DELETE /v1/media/:id */
   delete(id: string): Promise<Success> {
-    return this.r.request<Success>("DELETE", `/v1/media/${id}`);
+    return this.r.request<Success>("DELETE", path`/v1/media/${id}`);
   }
 }
 
@@ -300,24 +316,24 @@ export class CommentsResource {
 
   /** GET /v1/comments/:id */
   get(id: string): Promise<ScheduledComment> {
-    return this.r.request<ScheduledComment>("GET", `/v1/comments/${id}`);
+    return this.r.request<ScheduledComment>("GET", path`/v1/comments/${id}`);
   }
 
   /** PATCH /v1/comments/:id — edit a pending comment's text and/or time. */
   update(id: string, input: UpdateCommentInput): Promise<ScheduledComment> {
-    return this.r.request<ScheduledComment>("PATCH", `/v1/comments/${id}`, {
+    return this.r.request<ScheduledComment>("PATCH", path`/v1/comments/${id}`, {
       body: input,
     });
   }
 
   /** DELETE /v1/comments/:id — pending comments only. */
   delete(id: string): Promise<Success> {
-    return this.r.request<Success>("DELETE", `/v1/comments/${id}`);
+    return this.r.request<Success>("DELETE", path`/v1/comments/${id}`);
   }
 
   /** POST /v1/comments/:id/retry — publish a pending/failed comment now. */
   retry(id: string): Promise<ScheduledComment> {
-    return this.r.request<ScheduledComment>("POST", `/v1/comments/${id}/retry`);
+    return this.r.request<ScheduledComment>("POST", path`/v1/comments/${id}/retry`);
   }
 }
 
@@ -335,7 +351,7 @@ export class InboxResource {
 
   /** POST /v1/inbox/:itemId/reply */
   reply(itemId: string, message: string): Promise<Success> {
-    return this.r.request<Success>("POST", `/v1/inbox/${itemId}/reply`, {
+    return this.r.request<Success>("POST", path`/v1/inbox/${itemId}/reply`, {
       body: { message },
     });
   }
@@ -344,7 +360,7 @@ export class InboxResource {
   editReply(itemId: string, replyId: string, message: string): Promise<Success> {
     return this.r.request<Success>(
       "PATCH",
-      `/v1/inbox/${itemId}/replies/${replyId}`,
+      path`/v1/inbox/${itemId}/replies/${replyId}`,
       { body: { message } },
     );
   }
@@ -384,22 +400,22 @@ export class TeamsResource {
 
   /** GET /v1/teams/:id */
   get(id: string): Promise<Team> {
-    return this.r.request<Team>("GET", `/v1/teams/${id}`);
+    return this.r.request<Team>("GET", path`/v1/teams/${id}`);
   }
 
   /** PATCH /v1/teams/:id */
   update(id: string, input: UpdateTeamInput): Promise<Success> {
-    return this.r.request<Success>("PATCH", `/v1/teams/${id}`, { body: input });
+    return this.r.request<Success>("PATCH", path`/v1/teams/${id}`, { body: input });
   }
 
   /** DELETE /v1/teams/:id — refused while the team still owns accounts. */
   delete(id: string): Promise<Success> {
-    return this.r.request<Success>("DELETE", `/v1/teams/${id}`);
+    return this.r.request<Success>("DELETE", path`/v1/teams/${id}`);
   }
 
   /** POST /v1/teams/:id/accounts — assign an account to the team. */
   addAccount(id: string, accountId: string): Promise<Success> {
-    return this.r.request<Success>("POST", `/v1/teams/${id}/accounts`, {
+    return this.r.request<Success>("POST", path`/v1/teams/${id}/accounts`, {
       body: { accountId },
     });
   }
@@ -408,7 +424,7 @@ export class TeamsResource {
   removeAccount(id: string, accountId: string): Promise<Success> {
     return this.r.request<Success>(
       "DELETE",
-      `/v1/teams/${id}/accounts/${accountId}`,
+      path`/v1/teams/${id}/accounts/${accountId}`,
     );
   }
 }
@@ -428,7 +444,7 @@ export class PlatformsResource {
   get(platform: string): Promise<PlatformReferenceEntry> {
     return this.r.request<PlatformReferenceEntry>(
       "GET",
-      `/v1/platforms/${platform}`,
+      path`/v1/platforms/${platform}`,
     );
   }
 }
@@ -482,7 +498,7 @@ export class ImportsResource {
   getPostCsv(id: string): Promise<CsvImportSummary> {
     return this.r.request<CsvImportSummary>(
       "GET",
-      `/v1/imports/posts/csv/${id}`,
+      path`/v1/imports/posts/csv/${id}`,
     );
   }
 
@@ -500,7 +516,7 @@ export class ImportsResource {
     }>;
     total: number;
   }> {
-    return this.r.request("GET", `/v1/imports/posts/csv/${id}/rows`, {
+    return this.r.request("GET", path`/v1/imports/posts/csv/${id}/rows`, {
       query: opts as Record<string, unknown>,
     });
   }
@@ -509,8 +525,34 @@ export class ImportsResource {
   retryPostCsv(id: string): Promise<{ jobId: string | null; retrying: number }> {
     return this.r.request<{ jobId: string | null; retrying: number }>(
       "POST",
-      `/v1/imports/posts/csv/${id}/retry`,
+      path`/v1/imports/posts/csv/${id}/retry`,
     );
+  }
+}
+
+export class ClipsResource {
+  constructor(private readonly r: Requester) {}
+
+  /** POST /v1/clips — cut a long video (YouTube/public URL) into short clips,
+   *  optionally auto-posting to `channelIds`. Async: poll `get(id)`.
+   *  `idempotencyKey` makes retries safe — reuse it for the same request. */
+  create(input: CreateClipInput): Promise<ClipJob> {
+    return this.r.request<ClipJob>("POST", "/v1/clips", { body: input });
+  }
+
+  /** GET /v1/clips — most recent clipping jobs (max 20). */
+  list(opts: { limit?: number } = {}): Promise<ClipJob[]> {
+    return this.r.request<ClipJob[]>("GET", "/v1/clips", { query: opts });
+  }
+
+  /** GET /v1/clips/:id */
+  get(id: string): Promise<ClipJob> {
+    return this.r.request<ClipJob>("GET", path`/v1/clips/${id}`);
+  }
+
+  /** GET /v1/clips/usage — clipping minutes used vs. plan limit. */
+  usage(): Promise<ClipUsage> {
+    return this.r.request<ClipUsage>("GET", "/v1/clips/usage");
   }
 }
 

@@ -58,10 +58,52 @@ export interface Requester {
   baseUrl: string;
 }
 
+/** Encode interpolated path segments so an id can never change the route
+ *  (`path\`/v1/posts/${id}\``). */
+export function path(
+  strings: TemplateStringsArray,
+  ...values: string[]
+): string {
+  return strings.reduce(
+    (out, part, i) => out + encodeURIComponent(values[i - 1]!) + part,
+  );
+}
+
+/** Code for the legacy `{ error: string }` body, which carries no code. */
+const LEGACY_CODES: Record<number, string> = {
+  400: "bad_request",
+  403: "forbidden",
+  404: "not_found",
+};
+
+/** Statuses worth retrying: rate limits and transient gateway failures. */
+const RETRYABLE_STATUS = new Set([408, 429, 502, 503, 504]);
+const IDEMPOTENT = new Set(["GET", "HEAD", "PUT", "DELETE"]);
+
+declare const __SDK_VERSION__: string;
+const USER_AGENT = `postbuzz-sdk/${
+  typeof __SDK_VERSION__ === "string" ? __SDK_VERSION__ : "dev"
+}`;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/** Retry-After (seconds or HTTP date) → ms, else exponential backoff. */
+function retryDelay(res: Response | undefined, attempt: number): number {
+  const header = res?.headers.get("retry-after");
+  if (header) {
+    const secs = Number(header);
+    const ms = Number.isNaN(secs) ? Date.parse(header) - Date.now() : secs * 1000;
+    if (ms >= 0) return Math.min(ms, 60_000);
+  }
+  return Math.min(500 * 2 ** attempt, 8_000) * (0.5 + Math.random() / 2);
+}
+
 export function createRequester(opts: {
   apiKey: string;
   baseUrl?: string;
   fetch?: typeof globalThis.fetch;
+  timeoutMs?: number;
+  maxRetries?: number;
 }): Requester {
   if (!opts.apiKey) {
     throw new PostBuzzError({
@@ -73,6 +115,8 @@ export function createRequester(opts: {
   }
   const baseUrl = (opts.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, "");
   const doFetch = opts.fetch ?? globalThis.fetch;
+  const timeoutMs = opts.timeoutMs ?? 60_000;
+  const maxRetries = opts.maxRetries ?? 2;
 
   async function raw(
     method: string,
@@ -88,6 +132,8 @@ export function createRequester(opts: {
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${opts.apiKey}`,
+      Accept: "application/json",
+      "User-Agent": USER_AGENT,
     };
     let body: FormData | string | undefined;
     if (reqOpts?.body !== undefined) {
@@ -99,17 +145,40 @@ export function createRequester(opts: {
       }
     }
 
-    let res: Response;
-    try {
-      res = await doFetch(url, { method, headers, body });
-    } catch (cause) {
-      throw new PostBuzzError({
-        status: 0,
-        code: "UNREACHABLE",
-        message: `Could not reach the post.buzz API at ${url.origin}: ${
-          cause instanceof Error ? cause.message : String(cause)
-        }`,
-      });
+    // Network errors and 5xx are only retried for idempotent methods — a
+    // POST may have landed. 429 is always safe: the API rejected it unrun.
+    let res: Response | undefined;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        res = await doFetch(url, {
+          method,
+          headers,
+          body,
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+      } catch (cause) {
+        if (attempt < maxRetries && IDEMPOTENT.has(method)) {
+          await sleep(retryDelay(undefined, attempt));
+          continue;
+        }
+        const timedOut =
+          cause instanceof Error && cause.name === "TimeoutError";
+        throw new PostBuzzError({
+          status: 0,
+          code: timedOut ? "TIMEOUT" : "UNREACHABLE",
+          message: timedOut
+            ? `post.buzz API did not respond within ${timeoutMs}ms (${method} ${url.pathname})`
+            : `Could not reach the post.buzz API at ${url.origin}: ${
+                cause instanceof Error ? cause.message : String(cause)
+              }`,
+        });
+      }
+      const retryable =
+        res.status === 429 ||
+        (RETRYABLE_STATUS.has(res.status) && IDEMPOTENT.has(method));
+      if (!retryable || attempt >= maxRetries) break;
+      await res.body?.cancel();
+      await sleep(retryDelay(res, attempt));
     }
 
     if (!res.ok) {
@@ -121,8 +190,9 @@ export function createRequester(opts: {
         const parsed = JSON.parse(text) as ApiErrorBody | { error: string };
         if (typeof parsed.error === "string") {
           // Legacy shape still used by POST /v1/posts and DELETE /v1/posts/:id.
+          code = LEGACY_CODES[res.status] ?? code;
           message = parsed.error;
-        } else {
+        } else if (parsed.error?.code) {
           code = parsed.error.code;
           message = parsed.error.message;
           details = parsed.error.details;
@@ -149,8 +219,9 @@ export function createRequester(opts: {
       reqOpts?: { query?: Record<string, unknown>; body?: unknown },
     ): Promise<T> {
       const res = await raw(method, path, reqOpts);
-      if (res.status === 204) return undefined as T;
-      const envelope = (await res.json()) as ApiResponse<T>;
+      const text = await res.text();
+      if (!text) return undefined as T;
+      const envelope = JSON.parse(text) as ApiResponse<T>;
       // Most routes wrap payloads in { data: ... }; some (POST /v1/posts,
       // DELETE /v1/posts/:id) return the payload bare. Pass bare bodies
       // through instead of silently degrading to undefined.

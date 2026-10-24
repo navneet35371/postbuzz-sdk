@@ -58,15 +58,16 @@ Create an API key in post.buzz under **Settings → API Keys** (`sx_live_…`). 
 | `platforms` | `list`, `get` (per-platform field schemas) |
 | `organization` | `get`, `usage`, `checkSetup` |
 | `imports` | `createPostCsv`, `listPostCsv`, `getPostCsv`, `listPostCsvRows`, `retryPostCsv` |
+| `clips` | `create` (long video → short clips, async), `list`, `get`, `usage` |
 
 ### File uploads
 
 ```ts
-import { readFileSync } from "node:fs";
+import { openAsBlob } from "node:fs";
 
-const bytes = readFileSync("./pic.png");
 const media = await pb.media.uploadFile({
-  file: new File([bytes], "pic.png", { type: "image/png" }),
+  file: await openAsBlob("./pic.png", { type: "image/png" }),
+  fileName: "pic.png",
 }); // → media row; reference media.id in posts.create({ mediaIds: [...] })
 ```
 
@@ -79,6 +80,17 @@ const job = await pb.imports.createPostCsv({
 const rows = await pb.imports.listPostCsvRows(job.jobId);
 ```
 
+## Timeouts & retries
+
+Each request times out after 60 s (`timeoutMs`). Rate-limited responses (429)
+are retried up to `maxRetries` times (default 2), honoring `Retry-After`;
+transient 5xx and network errors are retried only for idempotent methods
+(GET/DELETE), so a POST is never sent twice.
+
+```ts
+const pb = new PostBuzz({ apiKey, timeoutMs: 30_000, maxRetries: 4 });
+```
+
 ## Errors
 
 ```ts
@@ -89,7 +101,7 @@ try {
 } catch (err) {
   if (err instanceof PostBuzzError) {
     err.status;  // 404
-    err.code;    // "not_found" (API code) or "HTTP_<status>" / "UNREACHABLE"
+    err.code;    // "not_found" (API code), "HTTP_<status>", "TIMEOUT" or "UNREACHABLE"
     err.message; // "Post not found"
     err.details; // structured context when the API sent one
   }
@@ -103,11 +115,11 @@ Error envelope: `{ error: { code, message, details? } }` — the same shape the 
 ```bash
 bun install
 bun run typecheck
-bun test          # vitest: 16 route-mapping + error-contract tests against a stub server
-bun run build     # tsup → dist/ (ESM + d.ts)
+bun run test      # vitest: route mapping, error contract, retries
+bun run build     # tsup → dist/ (ESM + CJS + d.ts)
 ```
 
-The sibling repos `postbuzz-cli` and `postbuzz-mcp` consume this package via `file:../postbuzz-sdk` in dev and inline it at build time.
+`postbuzz-cli` and `postbuzz-mcp` depend on the published package from npm.
 
 ## License
 

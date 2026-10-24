@@ -498,3 +498,67 @@ export type AccountToolResult = {
 };
 
 export type AccountToolName = "reddit-flairs" | "pinterest-boards";
+
+// ---------------------------------------------------------------------------
+// Clipping
+// ---------------------------------------------------------------------------
+
+export interface CreateClipInput {
+  /** Source video URL (e.g. YouTube). */
+  url: string;
+  /** 1–10, default 5. */
+  maxClips?: number;
+  /** How landscape video is fitted to vertical: blurred bars or crop. */
+  fit?: "blur" | "crop";
+  /** Accounts to auto-post finished clips to (max 20). */
+  channelIds?: string[];
+  /** Client-chosen key (≤100 chars); resending it returns the same job. */
+  idempotencyKey: string;
+}
+
+export interface ClipPick {
+  start: number;
+  end: number;
+  title: string;
+  caption: string;
+}
+
+export interface ClipResult {
+  pickIndex: number;
+  status: string;
+  videoPath?: string;
+  thumbnailPath?: string;
+  fileSize?: number;
+  thumbnailSize?: number;
+  width?: number;
+  height?: number;
+  duration?: number;
+  mediaId?: string;
+  postIds?: string[];
+  errorCode?: string;
+}
+
+export interface ClipJob {
+  id: string;
+  sourceUrl: string;
+  title: string | null;
+  duration: number | null;
+  maxClips: number;
+  fit: string;
+  channelIds: string[];
+  status: string;
+  stage: string;
+  picks: ClipPick[] | null;
+  results: ClipResult[];
+  reservedMinutes: number;
+  refunded: boolean;
+  errorCode: string | null;
+  completedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ClipUsage {
+  used: number;
+  limit: number;
+}
